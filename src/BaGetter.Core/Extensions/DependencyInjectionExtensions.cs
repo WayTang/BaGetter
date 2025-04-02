@@ -1,7 +1,9 @@
 using System;
 using System.Net;
 using System.Net.Http;
+using System.Net.Http.Headers;
 using System.Reflection;
+using System.Text;
 using BaGetter.Core.Statistics;
 using BaGetter.Protocol;
 using Microsoft.Extensions.Configuration;
@@ -13,7 +15,7 @@ namespace BaGetter.Core;
 
 public static partial class DependencyInjectionExtensions
 {
-    public static IServiceCollection AddBaGetterApplication(
+    public static BaGetterApplication AddBaGetterApplication(
         this IServiceCollection services,
         Action<BaGetterApplication> configureAction)
     {
@@ -27,7 +29,7 @@ public static partial class DependencyInjectionExtensions
 
         services.AddFallbackServices();
 
-        return services;
+        return app;
     }
 
     /// <summary>
@@ -66,6 +68,7 @@ public static partial class DependencyInjectionExtensions
         services.AddBaGetterOptions<DatabaseOptions>(nameof(BaGetterOptions.Database));
         services.AddBaGetterOptions<FileSystemStorageOptions>(nameof(BaGetterOptions.Storage));
         services.AddBaGetterOptions<MirrorOptions>(nameof(BaGetterOptions.Mirror));
+        services.AddBaGetterOptions<RetentionOptions>(nameof(BaGetterOptions.Retention));
         services.AddBaGetterOptions<SearchOptions>(nameof(BaGetterOptions.Search));
         services.AddBaGetterOptions<StorageOptions>(nameof(BaGetterOptions.Storage));
         services.AddBaGetterOptions<StatisticsOptions>(nameof(BaGetterOptions.Statistics));
@@ -191,11 +194,33 @@ public static partial class DependencyInjectionExtensions
     private static NuGetClientFactory NuGetClientFactoryFactory(IServiceProvider provider)
     {
         var httpClient = provider.GetRequiredService<HttpClient>();
-        var options = provider.GetRequiredService<IOptions<MirrorOptions>>();
+        var options = provider.GetRequiredService<IOptions<MirrorOptions>>().Value;
+
+        if (options.Authentication is { } auth)
+        {
+            switch (auth.Type)
+            {
+                case MirrorAuthenticationType.Basic:
+                    var credentials = Convert.ToBase64String(Encoding.UTF8.GetBytes($"{auth.Username}:{auth.Password}"));
+                    httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Basic", credentials);
+                    break;
+
+                case MirrorAuthenticationType.Bearer:
+                    httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", auth.Token);
+                    break;
+
+                case MirrorAuthenticationType.Custom:
+                    foreach (var (header, value) in auth.CustomHeaders)
+                    {
+                        httpClient.DefaultRequestHeaders.Add(header, value);
+                    }
+                    break;
+            }
+        }
 
         return new NuGetClientFactory(
             httpClient,
-            options.Value.PackageSource.ToString());
+            options.PackageSource.ToString());
     }
 
     private static IUpstreamClient UpstreamClientFactory(IServiceProvider provider)
